@@ -1,9 +1,9 @@
 ﻿# A股高股息率筛选器 - PowerShell后端
 # 启动: powershell -ExecutionPolicy Bypass -File server.ps1
-# 然后浏览器访问: http://localhost:8080
+# 然后浏览器访问: http://localhost:8081
 
 param(
-    [int]$Port = 8080
+    [int]$Port = 8081
 )
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -508,6 +508,9 @@ while ($listener.IsListening) {
     $req = $context.Request
     $res = $context.Response
     $path = $req.Url.LocalPath
+
+    # 允许跨域（支持直接双击打开index.html）
+    try { $res.Headers["Access-Control-Allow-Origin"] = "*" } catch {}
 
     if ($path -eq "/api/data") {
         $script:lock.WaitOne()
