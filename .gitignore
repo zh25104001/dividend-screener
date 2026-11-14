@@ -1,4 +1,7 @@
-﻿# 临时文件
+# 临时文件
 *.tmp
 *.log
 node_modules/
+
+# 本地缓存数据
+cache.json

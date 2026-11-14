@@ -9,6 +9,7 @@ param(
 $ErrorActionPreference = "SilentlyContinue"
 
 # ===== 全局缓存（线程安全） =====
+$script:cacheFile = "$PSScriptRoot\cache.json"
 $script:cache = @{
     data = @()
     jsonBytes = $null
@@ -18,6 +19,63 @@ $script:cache = @{
     alerts = @()
 }
 $script:lock = [System.Threading.Mutex]::new($false, "DividendCacheLock")
+
+# ===== 启动时加载本地缓存 =====
+function Load-CacheFromFile {
+    if (Test-Path $script:cacheFile) {
+        try {
+            $saved = Get-Content $script:cacheFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($saved.data -and $saved.data.Count -gt 0) {
+                $script:cache.data = $saved.data
+                $script:cache.alerts = $saved.alerts
+                $script:cache.prevYields = @{}
+                if ($saved.prevYields) {
+                    foreach ($p in $saved.prevYields.PSObject.Properties) {
+                        $script:cache.prevYields[$p.Name] = [decimal]$p.Value
+                    }
+                }
+                # 预生成JSON
+                $snapshot = @{
+                    success = $true
+                    count = $saved.data.Count
+                    lastUpdate = $saved.lastUpdate
+                    updating = $true
+                    alertCount = 0
+                    data = $saved.data
+                    alerts = $saved.alerts
+                }
+                $jsonStr = $snapshot | ConvertTo-Json -Depth 5 -Compress
+                $script:cache.jsonBytes = [System.Text.Encoding]::UTF8.GetBytes($jsonStr)
+                $script:cache.lastUpdate = $saved.lastUpdate
+                Write-Host "[缓存] 已加载上次数据: $($saved.data.Count) 只股票, 更新于 $($saved.lastUpdate)" -ForegroundColor Green
+                return $true
+            }
+        } catch {
+            Write-Host "[缓存] 读取缓存失败: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+    return $false
+}
+
+# ===== 保存缓存到文件 =====
+function Save-CacheToFile {
+    try {
+        $toSave = @{
+            lastUpdate = if ($script:cache.lastUpdate) { $script:cache.lastUpdate.ToString("yyyy-MM-dd HH:mm:ss") } else { $null }
+            data = $script:cache.data
+            alerts = $script:cache.alerts
+            prevYields = $script:cache.prevYields
+        }
+        $jsonStr = $toSave | ConvertTo-Json -Depth 5 -Compress
+        [System.IO.File]::WriteAllText($script:cacheFile, $jsonStr, [System.Text.Encoding]::UTF8)
+        Write-Host "[缓存] 已保存到文件" -ForegroundColor Green
+    } catch {
+        Write-Host "[缓存] 保存失败: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+# 启动时加载缓存
+$hasCache = Load-CacheFromFile
 
 # ===== 获取过去12个月分红记录 =====
 function Get-DividendData {
@@ -217,7 +275,7 @@ $ps.Runspace = $runspace
 
 # 把函数定义和cache引用传进去
 $ps.AddScript({
-    param($cache, $lock, $scriptRoot)
+    param($cache, $lock, $cacheFilePath)
 
     # 重新定义函数（子runspace无法访问父scope）
     function Get-DividendData {
@@ -385,7 +443,22 @@ $ps.AddScript({
     $cache.updating = $false
     $lock.ReleaseMutex()
 
-}).AddArgument($script:cache).AddArgument($script:lock).AddArgument($PSScriptRoot) | Out-Null
+    # 保存缓存到文件（在后台线程做，不阻塞HTTP）
+    try {
+        $toSave = @{
+            lastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            data = $result
+            alerts = $cache.alerts
+            prevYields = $cache.prevYields
+        }
+        $saveJson = $toSave | ConvertTo-Json -Depth 5 -Compress
+        [System.IO.File]::WriteAllText($cacheFilePath, $saveJson, [System.Text.Encoding]::UTF8)
+        Write-Host "[缓存] 已保存到文件" -ForegroundColor Green
+    } catch {
+        Write-Host "[缓存] 保存失败: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+
+}).AddArgument($script:cache).AddArgument($script:lock).AddArgument($script:cacheFile) | Out-Null
 
 $asyncHandle = $ps.BeginInvoke()
 $script:shared = @{
