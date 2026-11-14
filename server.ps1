@@ -388,18 +388,45 @@ $ps.AddScript({
 }).AddArgument($script:cache).AddArgument($script:lock).AddArgument($PSScriptRoot) | Out-Null
 
 $asyncHandle = $ps.BeginInvoke()
+$script:shared = @{
+    ps = $ps
+    asyncHandle = $asyncHandle
+    cache = $script:cache
+    lock = $script:lock
+}
 Write-Host "后台数据加载已启动，HTTP服务正常监听..." -ForegroundColor Green
 
-# 定时更新定时器
+# 定时更新定时器 - 每5分钟更新一次
 $updateTimer = New-Object System.Timers.Timer
-$updateTimer.Interval = 300000
+$updateTimer.Interval = 300000  # 5分钟
 $updateTimer.AutoReset = $true
+
+# 用同步哈希表在Runspace间共享状态
+$script:shared = @{
+    ps = $ps
+    asyncHandle = $asyncHandle
+    cache = $script:cache
+    lock = $script:lock
+}
+
 Register-ObjectEvent -InputObject $updateTimer -EventName Elapsed -Action {
-    # 检查后台是否空闲，空闲则启动新一轮
-    if (-not $script:cache.updating -and $asyncHandle.IsCompleted) {
-        $asyncHandle = $ps.BeginInvoke()
-    }
-} | Out-Null
+    # 用MessageData传递引用，避免scope问题
+    $shared = $Event.MessageData
+    $lock = $shared.lock
+    $cache = $shared.cache
+
+    $lock.WaitOne()
+    $isUpdating = $cache.updating
+    $lock.ReleaseMutex()
+
+    if ($isUpdating) { return }
+
+    # 上一次完成才能启动新一轮
+    if ($shared.asyncHandle -and -not $shared.asyncHandle.IsCompleted) { return }
+
+    Write-Host "[定时] 启动新一轮数据更新..." -ForegroundColor Cyan
+    $shared.asyncHandle = $shared.ps.BeginInvoke()
+} -MessageData $script:shared | Out-Null
 $updateTimer.Start()
 
 # HTTP监听循环
