@@ -14,6 +14,8 @@ $script:cache = @{
     jsonBytes = $null
     lastUpdate = $null
     updating = $false
+    prevYields = @{}
+    alerts = @()
 }
 $script:lock = [System.Threading.Mutex]::new($false, "DividendCacheLock")
 
@@ -304,13 +306,74 @@ $ps.AddScript({
     }
     $result = $result | Sort-Object yield -Descending
 
+    # ===== 阈值穿越检测 =====
+    $lock.WaitOne()
+    $prevYields = $cache.prevYields.Clone()
+    $lock.ReleaseMutex()
+
+    $newAlerts = @()
+    $now = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+    foreach ($stock in $result) {
+        $code = $stock.code
+        $oldYield = $null
+        if ($prevYields.ContainsKey($code)) { $oldYield = [decimal]$prevYields[$code] }
+        $newYield = [decimal]$stock.yield
+
+        if ($oldYield -ne $null) {
+            # 上升穿越5%: 从<5%升到>=5%
+            if ($oldYield -lt 5 -and $newYield -ge 5) {
+                $newAlerts += [PSCustomObject]@{
+                    type = "up"; code = $code; name = $stock.name
+                    oldYield = [math]::Round($oldYield, 2); newYield = $newYield
+                    price = $stock.price; time = $now
+                    message = "$($stock.name)($code) 股息率从 $([math]::Round($oldYield,2))% 升至 $($newYield)%，突破5%关口"
+                }
+            }
+            # 下降跌破4%: 从>=4%降到<4%
+            elseif ($oldYield -ge 4 -and $newYield -lt 4) {
+                $newAlerts += [PSCustomObject]@{
+                    type = "down"; code = $code; name = $stock.name
+                    oldYield = [math]::Round($oldYield, 2); newYield = $newYield
+                    price = $stock.price; time = $now
+                    message = "$($stock.name)($code) 股息率从 $([math]::Round($oldYield,2))% 降至 $($newYield)%，跌破4%关口"
+                }
+            }
+        }
+    }
+
+    # 更新快照
+    $newPrevYields = @{}
+    foreach ($stock in $result) { $newPrevYields[$stock.code] = $stock.yield }
+
+    # 合并预警（保留最近100条）
+    $lock.WaitOne()
+    $allAlerts = @($newAlerts) + $cache.alerts
+    if ($allAlerts.Count -gt 100) { $allAlerts = $allAlerts[0..99] }
+    $cache.alerts = $allAlerts
+    $cache.prevYields = $newPrevYields
+    $lock.ReleaseMutex()
+
+    if ($newAlerts.Count -gt 0) {
+        Write-Host "[预警] 发现 $($newAlerts.Count) 条股息率穿越提醒" -ForegroundColor Yellow
+        foreach ($a in $newAlerts) {
+            $icon = if ($a.type -eq "up") { "↑" } else { "↓" }
+            Write-Host "  $icon $($a.message)" -ForegroundColor $(if ($a.type -eq "up") { "Green" } else { "Red" })
+        }
+    }
+
     # 预生成JSON（在后台线程做，不阻塞HTTP）
+    $lock.WaitOne()
+    $alertSnapshot = $cache.alerts
+    $lock.ReleaseMutex()
+
     $snapshot = @{
         success = $true
         count = $result.Count
-        lastUpdate = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+        lastUpdate = $now
         updating = $false
+        alertCount = $newAlerts.Count
         data = $result
+        alerts = $alertSnapshot
     }
     $jsonStr = $snapshot | ConvertTo-Json -Depth 5 -Compress
     $jsonBytesArr = [System.Text.Encoding]::UTF8.GetBytes($jsonStr)
