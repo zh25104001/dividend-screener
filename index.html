@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A股高股息率筛选器 | 实时行情</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0f1117;
+  --card: #1a1d29;
+  --border: #2a2d3a;
+  --text: #e0e0e0;
+  --text-dim: #888;
+  --green: #ef4444;
+  --red: #22c55e;
+  --accent: #3b82f6;
+  --gold: #f59e0b;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, 'Microsoft YaHei', 'Segoe UI', sans-serif;
+  font-size: 14px;
+  padding: 16px;
+}
+.container { max-width: 1400px; margin: 0 auto; }
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 16px; flex-wrap: wrap; gap: 12px;
+}
+h1 { font-size: 22px; font-weight: 600; }
+h1 .sub { font-size: 13px; color: var(--text-dim); font-weight: 400; margin-left: 8px; }
+.toolbar {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+}
+.toolbar input, .toolbar select {
+  background: var(--card); border: 1px solid var(--border); color: var(--text);
+  padding: 7px 12px; border-radius: 6px; font-size: 13px; outline: none;
+  transition: border-color .2s;
+}
+.toolbar input:focus, .toolbar select:focus { border-color: var(--accent); }
+.toolbar input { width: 180px; }
+.toolbar button {
+  background: var(--accent); color: #fff; border: none;
+  padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: 13px;
+  transition: opacity .2s;
+}
+.toolbar button:hover { opacity: .85; }
+.toolbar button.active { background: var(--gold); }
+.stats {
+  display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.stat-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 18px; min-width: 120px;
+}
+.stat-card .label { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.stat-card .value { font-size: 20px; font-weight: 600; }
+.stat-card .value.gold { color: var(--gold); }
+.stat-card .value.blue { color: var(--accent); }
+.stat-card .value.green { color: var(--red); }
+.update-info {
+  font-size: 12px; color: var(--text-dim); margin-bottom: 10px;
+  display: flex; align-items: center; gap: 8px;
+}
+.update-info .dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+  animation: pulse 1.5s infinite;
+}
+.update-info .dot.idle { background: #555; animation: none; }
+@keyframes pulse { 50% { opacity: .3; } }
+table {
+  width: 100%; border-collapse: collapse;
+  background: var(--card); border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--border);
+}
+th, td { padding: 9px 12px; text-align: right; white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th {
+  background: #212530; color: var(--text-dim); font-weight: 500;
+  font-size: 12px; cursor: pointer; user-select: none;
+  position: sticky; top: 0; z-index: 1;
+}
+th:hover { color: var(--text); }
+th.sorted { color: var(--accent); }
+th.sorted::after { content: ' ↓'; font-size: 10px; }
+th.sorted.asc::after { content: ' ↑'; font-size: 10px; }
+td { border-bottom: 1px solid var(--border); }
+tr:hover { background: #1e2230; }
+.stock-name { font-weight: 500; }
+.stock-code { color: var(--text-dim); font-size: 12px; margin-left: 6px; }
+.yield-high { color: var(--gold); font-weight: 600; }
+.yield-mid { color: var(--accent); font-weight: 500; }
+.price-up { color: var(--red); }
+.price-down { color: var(--green); }
+.loading {
+  text-align: center; padding: 60px; color: var(--text-dim);
+}
+.loading .spinner {
+  display: inline-block; width: 32px; height: 32px;
+  border: 3px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.table-wrap { overflow-x: auto; max-height: calc(100vh - 260px); overflow-y: auto; }
+.table-wrap::-webkit-scrollbar { width: 6px; height: 6px; }
+.table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+.footer-note {
+  margin-top: 12px; font-size: 12px; color: var(--text-dim); text-align: center;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>A股高股息率筛选器<span class="sub">实时行情 · TTM股息率</span></h1>
+    <div class="toolbar">
+      <input type="text" id="search" placeholder="搜索代码/名称...">
+      <select id="minYield">
+        <option value="5">股息率 ≥ 5%</option>
+        <option value="4">股息率 ≥ 4%</option>
+        <option value="6">股息率 ≥ 6%</option>
+        <option value="7">股息率 ≥ 7%</option>
+        <option value="8">股息率 ≥ 8%</option>
+        <option value="0">全部</option>
+      </select>
+      <button id="refreshBtn">刷新数据</button>
+      <button id="autoBtn">自动刷新</button>
+    </div>
+  </header>
+
+  <div class="update-info" id="updateInfo">
+    <span class="dot idle"></span>
+    <span id="updateText">等待数据...</span>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="table-wrap">
+    <table id="dataTable">
+      <thead>
+        <tr>
+          <th data-key="name">股票名称</th>
+          <th data-key="price">最新价</th>
+          <th data-key="change">涨跌幅</th>
+          <th data-key="yield">股息率(TTM)</th>
+          <th data-key="totalDividend">TTM每股分红</th>
+          <th data-key="divCount">分红次数</th>
+          <th data-key="amount">成交额(亿)</th>
+        </tr>
+      </thead>
+      <tbody id="tbody">
+        <tr><td colspan="7"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">正在从服务器加载数据...</p></div></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="footer-note">
+    数据来源：东方财富(分红) + 新浪财经(行情) · 股息率=过去12个月累计每股分红/当前股价 · 仅供参考，不构成投资建议
+  </div>
+</div>
+
+<script>
+let allData = [];
+let displayData = [];
+let sortKey = 'yield';
+let sortAsc = false;
+let autoTimer = null;
+
+async function fetchData() {
+  try {
+    const res = await fetch('/api/data');
+    const json = await res.json();
+    if (json.success) {
+      allData = json.data || [];
+      document.getElementById('updateText').textContent =
+        `最近更新: ${json.lastUpdate || '未知'}  |  共 ${json.count} 只有分红记录的股票` +
+        (json.updating ? '  |  正在更新...' : '');
+      document.getElementById('updateInfo').querySelector('.dot').className =
+        json.updating ? 'dot' : 'dot idle';
+      updateDisplay();
+    }
+  } catch (e) {
+    document.getElementById('updateText').textContent = '数据加载失败: ' + e.message;
+    document.getElementById('tbody').innerHTML =
+      '<tr><td colspan="7" style="text-align:center;padding:40px;color:#ef4444">无法连接服务器，请确保 server.ps1 正在运行</td></tr>';
+  }
+}
+
+function updateDisplay() {
+  const minYield = parseFloat(document.getElementById('minYield').value);
+  const search = document.getElementById('search').value.trim().toLowerCase();
+
+  displayData = allData.filter(d => {
+    if (d.yield < minYield) return false;
+    if (search && !d.name.toLowerCase().includes(search) && !d.code.toLowerCase().includes(search)) return false;
+    return true;
+  });
+
+  displayData.sort((a, b) => {
+    let va = a[sortKey], vb = b[sortKey];
+    va = parseFloat(va) || 0;
+    vb = parseFloat(vb) || 0;
+    return sortAsc ? va - vb : vb - va;
+  });
+
+  renderTable();
+  renderStats();
+}
+
+function renderTable() {
+  const tbody = document.getElementById('tbody');
+  if (displayData.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-dim)">没有符合条件的股票</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = displayData.map(d => {
+    const yieldClass = d.yield >= 7 ? 'yield-high' : d.yield >= 5 ? 'yield-mid' : '';
+    const changeClass = d.change > 0 ? 'price-up' : d.change < 0 ? 'price-down' : '';
+    const changeStr = (d.change > 0 ? '+' : '') + d.change.toFixed(2) + '%';
+
+    return `<tr>
+      <td><span class="stock-name">${d.name}</span><span class="stock-code">${d.code}</span></td>
+      <td>${d.price.toFixed(2)}</td>
+      <td class="${changeClass}">${changeStr}</td>
+      <td class="${yieldClass}">${d.yield.toFixed(2)}%</td>
+      <td>${d.totalDividend.toFixed(3)} 元</td>
+      <td>${d.divCount}</td>
+      <td>${d.amount.toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+
+  document.querySelectorAll('th').forEach(th => {
+    th.classList.remove('sorted', 'asc');
+    if (th.dataset.key === sortKey) {
+      th.classList.add('sorted');
+      if (sortAsc) th.classList.add('asc');
+    }
+  });
+}
+
+function renderStats() {
+  const stats = document.getElementById('stats');
+  const minYield = parseFloat(document.getElementById('minYield').value);
+  const total = displayData.length;
+  const high7 = displayData.filter(d => d.yield >= 7).length;
+  const high6 = displayData.filter(d => d.yield >= 6).length;
+  const avgYield = total > 0 ? displayData.reduce((s, d) => s + d.yield, 0) / total : 0;
+  const maxYield = total > 0 ? Math.max(...displayData.map(d => d.yield)) : 0;
+
+  stats.innerHTML = `
+    <div class="stat-card">
+      <div class="label">符合条件（≥${minYield}%）</div>
+      <div class="value blue">${total}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">股息率 ≥ 7%</div>
+      <div class="value gold">${high7}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">股息率 ≥ 6%</div>
+      <div class="value">${high6}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">平均股息率</div>
+      <div class="value green">${avgYield.toFixed(2)}%</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">最高股息率</div>
+      <div class="value gold">${maxYield.toFixed(2)}%</div>
+    </div>
+  `;
+}
+
+// 事件绑定
+document.getElementById('refreshBtn').addEventListener('click', fetchData);
+
+document.getElementById('autoBtn').addEventListener('click', function() {
+  if (autoTimer) {
+    clearInterval(autoTimer);
+    autoTimer = null;
+    this.classList.remove('active');
+    this.textContent = '自动刷新';
+  } else {
+    this.classList.add('active');
+    this.textContent = '停止刷新';
+    autoTimer = setInterval(fetchData, 30000);
+  }
+});
+
+document.getElementById('search').addEventListener('input', updateDisplay);
+document.getElementById('minYield').addEventListener('change', updateDisplay);
+
+document.querySelectorAll('th').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.dataset.key;
+    if (sortKey === key) {
+      sortAsc = !sortAsc;
+    } else {
+      sortKey = key;
+      sortAsc = false;
+    }
+    updateDisplay();
+  });
+});
+
+// 初始加载
+fetchData();
+</script>
+</body>
+</html>
