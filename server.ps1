@@ -1,15 +1,30 @@
 ﻿# A股高股息率筛选器 - PowerShell后端
 # 启动: powershell -ExecutionPolicy Bypass -File server.ps1
 # 然后浏览器访问: http://localhost:8081
+# 代理和端口等设置见 config.json
 
 param(
-    [int]$Port = 8081
+    [int]$Port = 0
 )
 
 $ErrorActionPreference = "SilentlyContinue"
 
-# ===== 代理设置（华为企业网络需要代理访问外部API） =====
-$script:proxyUrl = "http://proxyhk.huawei.com:8080"
+# ===== 读取配置文件 =====
+$script:configFile = "$PSScriptRoot\config.json"
+$script:proxyUrl = $null
+$script:port = 8081
+$script:updateInterval = 300000
+
+if (Test-Path $script:configFile) {
+    try {
+        $cfg = Get-Content $script:configFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($cfg.proxy) { $script:proxyUrl = $cfg.proxy }
+        if ($cfg.port) { $script:port = [int]$cfg.port }
+        if ($cfg.updateInterval) { $script:updateInterval = [int]$cfg.updateInterval }
+    } catch {}
+}
+# 命令行参数覆盖配置文件
+if ($Port -gt 0) { $script:port = $Port }
 
 # ===== 全局缓存（线程安全） =====
 $script:cacheFile = "$PSScriptRoot\cache.json"
@@ -91,7 +106,9 @@ function Get-DividendData {
     for ($page = 1; $page -le $totalPages; $page++) {
         $url = "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_SHAREBONUS_DET&columns=SECURITY_CODE,SECURITY_NAME_ABBR,PRETAX_BONUS_RMB,EX_DIVIDEND_DATE,ASSIGN_PROGRESS&source=WEB&client=WEB&pageSize=100&pageNumber=$page&sortColumns=EX_DIVIDEND_DATE&sortTypes=-1&filter=(ASSIGN_PROGRESS=%22%E5%AE%9E%E6%96%BD%E5%88%86%E9%85%8D%22)(EX_DIVIDEND_DATE%3E=%27$cutoffDate%27)"
         try {
-            $r = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 10 -UseBasicParsing -Proxy $script:proxyUrl -ProxyUseDefaultCredentials
+            $iwParams = @{ Uri = $url; Headers = $headers; TimeoutSec = 10; UseBasicParsing = $true }
+            if ($script:proxyUrl) { $iwParams.Proxy = $script:proxyUrl; $iwParams.ProxyUseDefaultCredentials = $true }
+            $r = Invoke-WebRequest @iwParams
             $json = $r.Content | ConvertFrom-Json
             if (-not $json.success -or -not $json.result) { break }
             foreach ($item in $json.result.data) {
@@ -146,7 +163,9 @@ function Get-RealtimeQuotes {
         $url = "https://hq.sinajs.cn/list=$codeStr"
 
         try {
-            $r = Invoke-WebRequest -Uri $url -Headers @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://finance.sina.com.cn" } -TimeoutSec 10 -UseBasicParsing
+            $iwParams = @{ Uri = $url; Headers = @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://finance.sina.com.cn" }; TimeoutSec = 10; UseBasicParsing = $true }
+            if ($script:proxyUrl) { $iwParams.Proxy = $script:proxyUrl; $iwParams.ProxyUseDefaultCredentials = $true }
+            $r = Invoke-WebRequest @iwParams
             $lines = $r.Content -split "`n" | Where-Object { $_.Trim() -ne '' }
 
             foreach ($line in $lines) {
@@ -248,12 +267,12 @@ function Start-BackgroundUpdate {
 $html = Get-Content "$PSScriptRoot\index.html" -Raw -Encoding UTF8
 
 $listener = New-Object System.Net.HttpListener
-$listener.Prefixes.Add("http://localhost:$Port/")
+$listener.Prefixes.Add("http://localhost:$($script:port)/")
 [void]$listener.Start()
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  A股高股息率筛选器已启动" -ForegroundColor Cyan
-Write-Host "  浏览器访问: http://localhost:$Port" -ForegroundColor Yellow
+Write-Host "  浏览器访问: http://localhost:$($script:port)" -ForegroundColor Yellow
 Write-Host "  按 Ctrl+C 停止" -ForegroundColor Gray
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
@@ -292,7 +311,9 @@ $ps.AddScript({
         for ($page = 1; $page -le 50; $page++) {
             $url = "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_SHAREBONUS_DET&columns=SECURITY_CODE,SECURITY_NAME_ABBR,PRETAX_BONUS_RMB,EX_DIVIDEND_DATE,ASSIGN_PROGRESS&source=WEB&client=WEB&pageSize=100&pageNumber=$page&sortColumns=EX_DIVIDEND_DATE&sortTypes=-1&filter=(ASSIGN_PROGRESS=%22%E5%AE%9E%E6%96%BD%E5%88%86%E9%85%8D%22)(EX_DIVIDEND_DATE%3E=%27$cutoffDate%27)"
             try {
-                $r = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 10 -UseBasicParsing -Proxy $proxyUrl -ProxyUseDefaultCredentials
+                $iwParams = @{ Uri = $url; Headers = $headers; TimeoutSec = 10; UseBasicParsing = $true }
+                if ($proxyUrl) { $iwParams.Proxy = $proxyUrl; $iwParams.ProxyUseDefaultCredentials = $true }
+                $r = Invoke-WebRequest @iwParams
                 $json = $r.Content | ConvertFrom-Json
                 if (-not $json.success -or -not $json.result) { break }
                 foreach ($item in $json.result.data) {
@@ -325,7 +346,9 @@ $ps.AddScript({
             $batch = $sinaCodes[$i..([math]::Min($i + 99, $sinaCodes.Count - 1))]
             $url = "https://hq.sinajs.cn/list=$($batch -join ',')"
             try {
-                $r = Invoke-WebRequest -Uri $url -Headers @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://finance.sina.com.cn" } -TimeoutSec 10 -UseBasicParsing -Proxy $proxyUrl -ProxyUseDefaultCredentials
+                $iwParams = @{ Uri = $url; Headers = @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://finance.sina.com.cn" }; TimeoutSec = 10; UseBasicParsing = $true }
+                if ($proxyUrl) { $iwParams.Proxy = $proxyUrl; $iwParams.ProxyUseDefaultCredentials = $true }
+                $r = Invoke-WebRequest @iwParams
                 foreach ($line in ($r.Content -split "`n")) {
                     if ($line -match 'hq_str_\w{2}(\d{6})="([^"]*)"') {
                         $code = $matches[1]
@@ -436,7 +459,7 @@ $ps.AddScript({
         Write-Host "[预警] 发现 $($newAlerts.Count) 条股息率穿越提醒" -ForegroundColor Yellow
         foreach ($a in $newAlerts) {
             $icon = if ($a.type -eq "up") { "↑" } else { "↓" }
-            Write-Host "  $icon $($a.message)" -ForegroundColor $(if ($a.type -eq "up") { "Green" } else { "Red" })
+            Write-Host "  $icon $($a.message)" -ForegroundColor $(if ($a.type -eq "up") { "Red" } else { "Green" })
         }
     }
 
@@ -492,7 +515,7 @@ Write-Host "后台数据加载已启动，HTTP服务正常监听..." -Foreground
 
 # 定时更新定时器 - 每5分钟更新一次
 $updateTimer = New-Object System.Timers.Timer
-$updateTimer.Interval = 300000  # 5分钟
+$updateTimer.Interval = $script:updateInterval
 $updateTimer.AutoReset = $true
 
 # 用同步哈希表在Runspace间共享状态
@@ -559,7 +582,8 @@ while ($listener.IsListening) {
         }
     }
     elseif ($path -eq "/" -or $path -eq "/index.html") {
-        $bytes = [System.Text.Encoding]::UTF8.GetBytes($html)
+        $htmlWithPort = $html -replace 'localhost:8081', "localhost:$($script:port)"
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($htmlWithPort)
         $res.ContentType = "text/html; charset=utf-8"
         $res.ContentLength64 = $bytes.Length
         $res.OutputStream.Write($bytes, 0, $bytes.Length)

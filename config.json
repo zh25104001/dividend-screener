@@ -1,0 +1,5 @@
+{
+  "proxy": "http://proxyhk.huawei.com:8080",
+  "port": 8081,
+  "updateInterval": 300000
+}
