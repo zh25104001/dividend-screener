@@ -16,6 +16,7 @@
   --red: #22c55e;
   --accent: #3b82f6;
   --gold: #f59e0b;
+  --star: #fbbf24;
 }
 body {
   background: var(--bg);
@@ -40,7 +41,7 @@ h1 .sub { font-size: 13px; color: var(--text-dim); font-weight: 400; margin-left
   transition: border-color .2s;
 }
 .toolbar input:focus, .toolbar select:focus { border-color: var(--accent); }
-.toolbar input { width: 180px; }
+.toolbar input { width: 200px; }
 .toolbar button {
   background: var(--accent); color: #fff; border: none;
   padding: 7px 16px; border-radius: 6px; cursor: pointer; font-size: 13px;
@@ -48,6 +49,21 @@ h1 .sub { font-size: 13px; color: var(--text-dim); font-weight: 400; margin-left
 }
 .toolbar button:hover { opacity: .85; }
 .toolbar button.active { background: var(--gold); }
+/* Tab导航 */
+.tabs {
+  display: flex; gap: 0; margin-bottom: 14px; border-bottom: 1px solid var(--border);
+}
+.tab {
+  padding: 8px 24px; cursor: pointer; font-size: 14px; color: var(--text-dim);
+  border-bottom: 2px solid transparent; transition: all .2s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 500; }
+.tab .badge {
+  display: inline-block; background: var(--border); color: var(--text-dim);
+  font-size: 11px; padding: 1px 7px; border-radius: 10px; margin-left: 6px;
+}
+.tab.active .badge { background: var(--accent); color: #fff; }
 .stats {
   display: flex; gap: 16px; margin-bottom: 12px; flex-wrap: wrap;
 }
@@ -94,6 +110,13 @@ tr:hover { background: #1e2230; }
 .yield-mid { color: var(--accent); font-weight: 500; }
 .price-up { color: var(--red); }
 .price-down { color: var(--green); }
+/* 收藏星标 */
+.star-btn {
+  background: none; border: none; cursor: pointer; font-size: 18px;
+  color: #555; padding: 0 4px; transition: all .15s; line-height: 1;
+}
+.star-btn:hover { color: var(--star); transform: scale(1.2); }
+.star-btn.favorited { color: var(--star); }
 .loading {
   text-align: center; padding: 60px; color: var(--text-dim);
 }
@@ -103,12 +126,19 @@ tr:hover { background: #1e2230; }
   border-radius: 50%; animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.table-wrap { overflow-x: auto; max-height: calc(100vh - 260px); overflow-y: auto; }
+.table-wrap { overflow-x: auto; max-height: calc(100vh - 280px); overflow-y: auto; }
 .table-wrap::-webkit-scrollbar { width: 6px; height: 6px; }
 .table-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 .footer-note {
   margin-top: 12px; font-size: 12px; color: var(--text-dim); text-align: center;
 }
+/* 搜索高亮 */
+.search-highlight { background: rgba(59,130,246,0.15); border-radius: 2px; }
+.empty-state {
+  text-align: center; padding: 60px 20px; color: var(--text-dim);
+}
+.empty-state .icon { font-size: 48px; margin-bottom: 16px; }
+.empty-state .hint { font-size: 13px; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -116,7 +146,7 @@ tr:hover { background: #1e2230; }
   <header>
     <h1>A股高股息率筛选器<span class="sub">实时行情 · TTM股息率</span></h1>
     <div class="toolbar">
-      <input type="text" id="search" placeholder="搜索代码/名称...">
+      <input type="text" id="search" placeholder="输入股票名称或代码搜索...">
       <select id="minYield">
         <option value="5">股息率 ≥ 5%</option>
         <option value="4">股息率 ≥ 4%</option>
@@ -135,12 +165,19 @@ tr:hover { background: #1e2230; }
     <span id="updateText">等待数据...</span>
   </div>
 
+  <!-- Tab导航 -->
+  <div class="tabs">
+    <div class="tab active" data-tab="all" id="tabAll">全部股票</div>
+    <div class="tab" data-tab="favorites" id="tabFav">我的收藏<span class="badge" id="favBadge">0</span></div>
+  </div>
+
   <div class="stats" id="stats"></div>
 
-  <div class="table-wrap">
+  <div class="table-wrap" id="tableWrap">
     <table id="dataTable">
       <thead>
         <tr>
+          <th data-key="name" style="width:40px">★</th>
           <th data-key="name">股票名称</th>
           <th data-key="price">最新价</th>
           <th data-key="change">涨跌幅</th>
@@ -151,7 +188,7 @@ tr:hover { background: #1e2230; }
         </tr>
       </thead>
       <tbody id="tbody">
-        <tr><td colspan="7"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">正在从服务器加载数据...</p></div></td></tr>
+        <tr><td colspan="8"><div class="loading"><div class="spinner"></div><p style="margin-top:12px">正在从服务器加载数据...</p></div></td></tr>
       </tbody>
     </table>
   </div>
@@ -167,7 +204,35 @@ let displayData = [];
 let sortKey = 'yield';
 let sortAsc = false;
 let autoTimer = null;
+let currentTab = 'all';
+let favorites = JSON.parse(localStorage.getItem('dividend_favorites') || '[]');
 
+// ===== 收藏管理 =====
+function saveFavorites() {
+  localStorage.setItem('dividend_favorites', JSON.stringify(favorites));
+  updateFavBadge();
+}
+
+function isFavorited(code) {
+  return favorites.includes(code);
+}
+
+function toggleFavorite(code) {
+  const idx = favorites.indexOf(code);
+  if (idx >= 0) {
+    favorites.splice(idx, 1);
+  } else {
+    favorites.push(code);
+  }
+  saveFavorites();
+  updateDisplay();
+}
+
+function updateFavBadge() {
+  document.getElementById('favBadge').textContent = favorites.length;
+}
+
+// ===== 数据获取 =====
 async function fetchData() {
   try {
     const res = await fetch('/api/data');
@@ -184,35 +249,65 @@ async function fetchData() {
   } catch (e) {
     document.getElementById('updateText').textContent = '数据加载失败: ' + e.message;
     document.getElementById('tbody').innerHTML =
-      '<tr><td colspan="7" style="text-align:center;padding:40px;color:#ef4444">无法连接服务器，请确保 server.ps1 正在运行</td></tr>';
+      '<tr><td colspan="8" style="text-align:center;padding:40px;color:#ef4444">无法连接服务器，请确保 server.ps1 正在运行</td></tr>';
   }
 }
 
+// ===== 搜索高亮 =====
+function highlight(text, search) {
+  if (!search) return text;
+  const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return text.replace(new RegExp(escaped, 'gi'), m => `<span class="search-highlight">${m}</span>`);
+}
+
+// ===== 显示逻辑 =====
 function updateDisplay() {
   const minYield = parseFloat(document.getElementById('minYield').value);
   const search = document.getElementById('search').value.trim().toLowerCase();
 
-  displayData = allData.filter(d => {
+  let source = allData;
+
+  // 收藏页：只显示收藏的股票
+  if (currentTab === 'favorites') {
+    source = allData.filter(d => favorites.includes(d.code));
+  }
+
+  // 按股息率筛选
+  displayData = source.filter(d => {
     if (d.yield < minYield) return false;
+    // 搜索：支持名称和代码模糊匹配
     if (search && !d.name.toLowerCase().includes(search) && !d.code.toLowerCase().includes(search)) return false;
     return true;
   });
 
+  // 排序
   displayData.sort((a, b) => {
     let va = a[sortKey], vb = b[sortKey];
     va = parseFloat(va) || 0;
-    vb = parseFloat(vb) || 0;
+    vb = parseFloat(b[sortKey]) || 0;
     return sortAsc ? va - vb : vb - va;
   });
 
-  renderTable();
+  renderTable(search);
   renderStats();
 }
 
-function renderTable() {
+function renderTable(search) {
   const tbody = document.getElementById('tbody');
+
+  if (currentTab === 'favorites' && favorites.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="8">
+      <div class="empty-state">
+        <div class="icon">⭐</div>
+        <div>还没有收藏任何股票</div>
+        <div class="hint">在「全部股票」页面点击星标 ★ 即可收藏</div>
+      </div>
+    </td></tr>`;
+    return;
+  }
+
   if (displayData.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-dim)">没有符合条件的股票</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-dim)">没有符合条件的股票</td></tr>';
     return;
   }
 
@@ -220,9 +315,14 @@ function renderTable() {
     const yieldClass = d.yield >= 7 ? 'yield-high' : d.yield >= 5 ? 'yield-mid' : '';
     const changeClass = d.change > 0 ? 'price-up' : d.change < 0 ? 'price-down' : '';
     const changeStr = (d.change > 0 ? '+' : '') + d.change.toFixed(2) + '%';
+    const favClass = isFavorited(d.code) ? 'favorited' : '';
+    const favIcon = isFavorited(d.code) ? '★' : '☆';
+    const nameHtml = highlight(d.name, search);
+    const codeHtml = highlight(d.code, search);
 
     return `<tr>
-      <td><span class="stock-name">${d.name}</span><span class="stock-code">${d.code}</span></td>
+      <td><button class="star-btn ${favClass}" onclick="toggleFavorite('${d.code}')" title="收藏/取消">${favIcon}</button></td>
+      <td><span class="stock-name">${nameHtml}</span><span class="stock-code">${codeHtml}</span></td>
       <td>${d.price.toFixed(2)}</td>
       <td class="${changeClass}">${changeStr}</td>
       <td class="${yieldClass}">${d.yield.toFixed(2)}%</td>
@@ -245,36 +345,77 @@ function renderStats() {
   const stats = document.getElementById('stats');
   const minYield = parseFloat(document.getElementById('minYield').value);
   const total = displayData.length;
-  const high7 = displayData.filter(d => d.yield >= 7).length;
-  const high6 = displayData.filter(d => d.yield >= 6).length;
-  const avgYield = total > 0 ? displayData.reduce((s, d) => s + d.yield, 0) / total : 0;
-  const maxYield = total > 0 ? Math.max(...displayData.map(d => d.yield)) : 0;
 
-  stats.innerHTML = `
-    <div class="stat-card">
-      <div class="label">符合条件（≥${minYield}%）</div>
-      <div class="value blue">${total}</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">股息率 ≥ 7%</div>
-      <div class="value gold">${high7}</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">股息率 ≥ 6%</div>
-      <div class="value">${high6}</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">平均股息率</div>
-      <div class="value green">${avgYield.toFixed(2)}%</div>
-    </div>
-    <div class="stat-card">
-      <div class="label">最高股息率</div>
-      <div class="value gold">${maxYield.toFixed(2)}%</div>
-    </div>
-  `;
+  if (currentTab === 'favorites') {
+    const favCount = favorites.length;
+    const avgYield = total > 0 ? displayData.reduce((s, d) => s + d.yield, 0) / total : 0;
+    const maxYield = total > 0 ? Math.max(...displayData.map(d => d.yield)) : 0;
+    const high7 = displayData.filter(d => d.yield >= 7).length;
+
+    stats.innerHTML = `
+      <div class="stat-card">
+        <div class="label">收藏总数</div>
+        <div class="value blue">${favCount}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">符合筛选条件</div>
+        <div class="value">${total}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">其中股息率 ≥ 7%</div>
+        <div class="value gold">${high7}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">平均股息率</div>
+        <div class="value green">${avgYield.toFixed(2)}%</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">最高股息率</div>
+        <div class="value gold">${maxYield.toFixed(2)}%</div>
+      </div>
+    `;
+  } else {
+    const high7 = displayData.filter(d => d.yield >= 7).length;
+    const high6 = displayData.filter(d => d.yield >= 6).length;
+    const avgYield = total > 0 ? displayData.reduce((s, d) => s + d.yield, 0) / total : 0;
+    const maxYield = total > 0 ? Math.max(...displayData.map(d => d.yield)) : 0;
+
+    stats.innerHTML = `
+      <div class="stat-card">
+        <div class="label">符合条件（≥${minYield}%）</div>
+        <div class="value blue">${total}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">股息率 ≥ 7%</div>
+        <div class="value gold">${high7}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">股息率 ≥ 6%</div>
+        <div class="value">${high6}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">平均股息率</div>
+        <div class="value green">${avgYield.toFixed(2)}%</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">最高股息率</div>
+        <div class="value gold">${maxYield.toFixed(2)}%</div>
+      </div>
+    `;
+  }
 }
 
-// 事件绑定
+// ===== Tab切换 =====
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+    currentTab = tab.dataset.tab;
+    updateDisplay();
+  });
+});
+
+// ===== 事件绑定 =====
 document.getElementById('refreshBtn').addEventListener('click', fetchData);
 
 document.getElementById('autoBtn').addEventListener('click', function() {
@@ -296,6 +437,7 @@ document.getElementById('minYield').addEventListener('change', updateDisplay);
 document.querySelectorAll('th').forEach(th => {
   th.addEventListener('click', () => {
     const key = th.dataset.key;
+    if (!key || key === 'name' && th.textContent === '★') return;
     if (sortKey === key) {
       sortAsc = !sortAsc;
     } else {
@@ -306,7 +448,8 @@ document.querySelectorAll('th').forEach(th => {
   });
 });
 
-// 初始加载
+// 初始化
+updateFavBadge();
 fetchData();
 </script>
 </body>
