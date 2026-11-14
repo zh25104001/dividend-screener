@@ -177,13 +177,13 @@ function Get-RealtimeQuotes {
 
 # ===== 合并数据，计算股息率 =====
 function Update-StockData {
-    $script:lock.WaitOne()
+    [void]$script:lock.WaitOne()
     if ($script:cache.updating) {
-        $script:lock.ReleaseMutex()
+        [void]$script:lock.ReleaseMutex()
         return
     }
     $script:cache.updating = $true
-    $script:lock.ReleaseMutex()
+    [void]$script:lock.ReleaseMutex()
 
     Write-Host "[更新数据] $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor Cyan
 
@@ -218,11 +218,11 @@ function Update-StockData {
 
     $result = $result | Sort-Object yield -Descending
 
-    $script:lock.WaitOne()
+    [void]$script:lock.WaitOne()
     $script:cache.data = $result
     $script:cache.lastUpdate = Get-Date
     $script:cache.updating = $false
-    $script:lock.ReleaseMutex()
+    [void]$script:lock.ReleaseMutex()
 
     $high5 = ($result | Where-Object { $_.yield -ge 5 }).Count
     Write-Host "[完成] 共 $($result.Count) 只有分红记录的股票，其中 $high5 只股息率>=5%" -ForegroundColor Green
@@ -246,7 +246,7 @@ $html = Get-Content "$PSScriptRoot\index.html" -Raw -Encoding UTF8
 
 $listener = New-Object System.Net.HttpListener
 $listener.Prefixes.Add("http://localhost:$Port/")
-$listener.Start()
+[void]$listener.Start()
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "  A股高股息率筛选器已启动" -ForegroundColor Cyan
@@ -488,19 +488,25 @@ Register-ObjectEvent -InputObject $updateTimer -EventName Elapsed -Action {
     $lock = $shared.lock
     $cache = $shared.cache
 
-    $lock.WaitOne()
+    [void]$lock.WaitOne()
     $isUpdating = $cache.updating
-    $lock.ReleaseMutex()
+    [void]$lock.ReleaseMutex()
 
-    if ($isUpdating) { return }
+    if ($isUpdating) {
+        Write-Host "[定时] 跳过：数据正在更新中" -ForegroundColor DarkGray
+        return $null
+    }
 
     # 上一次完成才能启动新一轮
-    if ($shared.asyncHandle -and -not $shared.asyncHandle.IsCompleted) { return }
+    if ($shared.asyncHandle -and -not $shared.asyncHandle.IsCompleted) {
+        Write-Host "[定时] 跳过：上一次更新尚未完成" -ForegroundColor DarkGray
+        return $null
+    }
 
-    Write-Host "[定时] 启动新一轮数据更新..." -ForegroundColor Cyan
+    Write-Host "[定时] $(Get-Date -Format 'HH:mm:ss') 启动新一轮数据更新..." -ForegroundColor Cyan
     $shared.asyncHandle = $shared.ps.BeginInvoke()
 } -MessageData $script:shared | Out-Null
-$updateTimer.Start()
+[void]$updateTimer.Start()
 
 # HTTP监听循环
 while ($listener.IsListening) {
@@ -513,10 +519,10 @@ while ($listener.IsListening) {
     try { $res.Headers["Access-Control-Allow-Origin"] = "*" } catch {}
 
     if ($path -eq "/api/data") {
-        $script:lock.WaitOne()
+        [void]$script:lock.WaitOne()
         $cachedBytes = $script:cache.jsonBytes
         $isUpdating = $script:cache.updating
-        $script:lock.ReleaseMutex()
+        [void]$script:lock.ReleaseMutex()
 
         if ($cachedBytes) {
             $res.ContentType = "application/json; charset=utf-8"
