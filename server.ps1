@@ -8,6 +8,9 @@ param(
 
 $ErrorActionPreference = "SilentlyContinue"
 
+# ===== 代理设置（华为企业网络需要代理访问外部API） =====
+$script:proxyUrl = "http://proxyhk.huawei.com:8080"
+
 # ===== 全局缓存（线程安全） =====
 $script:cacheFile = "$PSScriptRoot\cache.json"
 $script:cache = @{
@@ -88,7 +91,7 @@ function Get-DividendData {
     for ($page = 1; $page -le $totalPages; $page++) {
         $url = "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_SHAREBONUS_DET&columns=SECURITY_CODE,SECURITY_NAME_ABBR,PRETAX_BONUS_RMB,EX_DIVIDEND_DATE,ASSIGN_PROGRESS&source=WEB&client=WEB&pageSize=100&pageNumber=$page&sortColumns=EX_DIVIDEND_DATE&sortTypes=-1&filter=(ASSIGN_PROGRESS=%22%E5%AE%9E%E6%96%BD%E5%88%86%E9%85%8D%22)(EX_DIVIDEND_DATE%3E=%27$cutoffDate%27)"
         try {
-            $r = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 10 -UseBasicParsing
+            $r = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 10 -UseBasicParsing -Proxy $script:proxyUrl -ProxyUseDefaultCredentials
             $json = $r.Content | ConvertFrom-Json
             if (-not $json.success -or -not $json.result) { break }
             foreach ($item in $json.result.data) {
@@ -277,6 +280,9 @@ $ps.Runspace = $runspace
 $ps.AddScript({
     param($cache, $lock, $cacheFilePath)
 
+    # 代理设置（子runspace无法访问父scope变量）
+    $proxyUrl = "http://proxyhk.huawei.com:8080"
+
     # 重新定义函数（子runspace无法访问父scope）
     function Get-DividendData {
         $headers = @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://data.eastmoney.com/" }
@@ -286,7 +292,7 @@ $ps.AddScript({
         for ($page = 1; $page -le 50; $page++) {
             $url = "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_SHAREBONUS_DET&columns=SECURITY_CODE,SECURITY_NAME_ABBR,PRETAX_BONUS_RMB,EX_DIVIDEND_DATE,ASSIGN_PROGRESS&source=WEB&client=WEB&pageSize=100&pageNumber=$page&sortColumns=EX_DIVIDEND_DATE&sortTypes=-1&filter=(ASSIGN_PROGRESS=%22%E5%AE%9E%E6%96%BD%E5%88%86%E9%85%8D%22)(EX_DIVIDEND_DATE%3E=%27$cutoffDate%27)"
             try {
-                $r = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 10 -UseBasicParsing
+                $r = Invoke-WebRequest -Uri $url -Headers $headers -TimeoutSec 10 -UseBasicParsing -Proxy $proxyUrl -ProxyUseDefaultCredentials
                 $json = $r.Content | ConvertFrom-Json
                 if (-not $json.success -or -not $json.result) { break }
                 foreach ($item in $json.result.data) {
@@ -319,7 +325,7 @@ $ps.AddScript({
             $batch = $sinaCodes[$i..([math]::Min($i + 99, $sinaCodes.Count - 1))]
             $url = "https://hq.sinajs.cn/list=$($batch -join ',')"
             try {
-                $r = Invoke-WebRequest -Uri $url -Headers @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://finance.sina.com.cn" } -TimeoutSec 10 -UseBasicParsing
+                $r = Invoke-WebRequest -Uri $url -Headers @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://finance.sina.com.cn" } -TimeoutSec 10 -UseBasicParsing -Proxy $proxyUrl -ProxyUseDefaultCredentials
                 foreach ($line in ($r.Content -split "`n")) {
                     if ($line -match 'hq_str_\w{2}(\d{6})="([^"]*)"') {
                         $code = $matches[1]
@@ -367,9 +373,19 @@ $ps.AddScript({
     # ===== 阈值穿越检测 =====
     $lock.WaitOne()
     $prevYields = $cache.prevYields.Clone()
+    $prevDataCount = $cache.data.Count
     $lock.ReleaseMutex()
 
     $newAlerts = @()
+
+    # 数据量保护：如果本次数据比上次少20%以上，说明API请求不完整，跳过预警检测
+    $skipAlerts = $false
+    if ($prevDataCount -gt 0 -and $result.Count -lt $prevDataCount * 0.8) {
+        Write-Host "[预警] 跳过检测：本次数据($($result.Count))比上次($prevDataCount)少太多，可能API不完整" -ForegroundColor DarkGray
+        $skipAlerts = $true
+    }
+
+    if (-not $skipAlerts) {
     $now = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     foreach ($stock in $result) {
         $code = $stock.code
@@ -378,6 +394,10 @@ $ps.AddScript({
         $newYield = [decimal]$stock.yield
 
         if ($oldYield -ne $null) {
+            # 增加容差0.3%，避免四舍五入和价格微动导致的假预警
+            $diff = [math]::Abs($newYield - $oldYield)
+            if ($diff -lt 0.3) { continue }
+
             # 上升穿越5%: 从<5%升到>=5%
             if ($oldYield -lt 5 -and $newYield -ge 5) {
                 $newAlerts += [PSCustomObject]@{
@@ -398,6 +418,7 @@ $ps.AddScript({
             }
         }
     }
+    } # end if (-not $skipAlerts)
 
     # 更新快照
     $newPrevYields = @{}
