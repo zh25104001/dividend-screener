@@ -307,29 +307,50 @@ $ps.AddScript({
         $headers = @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://data.eastmoney.com/" }
         $cutoffDate = (Get-Date).AddYears(-1).ToString("yyyy-MM-dd")
         $allDividends = @{}
+        $totalPages = 50
+        $page = 1
+        $consecutiveEmpty = 0
 
-        for ($page = 1; $page -le 50; $page++) {
+        while ($page -le $totalPages) {
             $url = "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_SHAREBONUS_DET&columns=SECURITY_CODE,SECURITY_NAME_ABBR,PRETAX_BONUS_RMB,EX_DIVIDEND_DATE,ASSIGN_PROGRESS&source=WEB&client=WEB&pageSize=100&pageNumber=$page&sortColumns=EX_DIVIDEND_DATE&sortTypes=-1&filter=(ASSIGN_PROGRESS=%22%E5%AE%9E%E6%96%BD%E5%88%86%E9%85%8D%22)(EX_DIVIDEND_DATE%3E=%27$cutoffDate%27)"
-            try {
-                $iwParams = @{ Uri = $url; Headers = $headers; TimeoutSec = 10; UseBasicParsing = $true }
-                if ($proxyUrl) { $iwParams.Proxy = $proxyUrl; $iwParams.ProxyUseDefaultCredentials = $true }
-                $r = Invoke-WebRequest @iwParams
-                $json = $r.Content | ConvertFrom-Json
-                if (-not $json.success -or -not $json.result) { break }
-                foreach ($item in $json.result.data) {
-                    $code = $item.SECURITY_CODE
-                    $bonus = [decimal]$item.PRETAX_BONUS_RMB
-                    if ($bonus -le 0) { continue }
-                    $perShare = $bonus / 10
-                    if ($allDividends.ContainsKey($code)) {
-                        $allDividends[$code].totalDividend += $perShare
-                        $allDividends[$code].count++
-                    } else {
-                        $allDividends[$code] = @{ code = $code; name = $item.SECURITY_NAME_ABBR; totalDividend = $perShare; count = 1 }
+            $success = $false
+            for ($retry = 0; $retry -lt 3; $retry++) {
+                try {
+                    $iwParams = @{ Uri = $url; Headers = $headers; TimeoutSec = 15; UseBasicParsing = $true }
+                    if ($proxyUrl) { $iwParams.Proxy = $proxyUrl; $iwParams.ProxyUseDefaultCredentials = $true }
+                    $r = Invoke-WebRequest @iwParams
+                    $json = $r.Content | ConvertFrom-Json
+                    if (-not $json.success -or -not $json.result) {
+                        $consecutiveEmpty++
+                        $success = $true  # 正常结束（没有更多数据）
+                        break
                     }
+                    $consecutiveEmpty = 0
+                    foreach ($item in $json.result.data) {
+                        $code = $item.SECURITY_CODE
+                        $bonus = [decimal]$item.PRETAX_BONUS_RMB
+                        if ($bonus -le 0) { continue }
+                        $perShare = $bonus / 10
+                        if ($allDividends.ContainsKey($code)) {
+                            $allDividends[$code].totalDividend += $perShare
+                            $allDividends[$code].count++
+                        } else {
+                            $allDividends[$code] = @{ code = $code; name = $item.SECURITY_NAME_ABBR; totalDividend = $perShare; count = 1 }
+                        }
+                    }
+                    $success = $true
+                    break
+                } catch {
+                    if ($retry -lt 2) { Start-Sleep -Milliseconds 500 }
                 }
-            } catch {}
+            }
+            if (-not $success) {
+                Write-Host "    分红数据第${page}页失败（重试3次）" -ForegroundColor Yellow
+            }
+            if ($consecutiveEmpty -ge 2) { break }  # 连续2页空数据，结束
+            $page++
         }
+        Write-Host "    分红数据完成: $($allDividends.Count) 只股票有分红记录" -ForegroundColor Green
         return $allDividends
     }
 
@@ -345,25 +366,30 @@ $ps.AddScript({
         for ($i = 0; $i -lt $sinaCodes.Count; $i += 100) {
             $batch = $sinaCodes[$i..([math]::Min($i + 99, $sinaCodes.Count - 1))]
             $url = "https://hq.sinajs.cn/list=$($batch -join ',')"
-            try {
-                $iwParams = @{ Uri = $url; Headers = @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://finance.sina.com.cn" }; TimeoutSec = 10; UseBasicParsing = $true }
-                if ($proxyUrl) { $iwParams.Proxy = $proxyUrl; $iwParams.ProxyUseDefaultCredentials = $true }
-                $r = Invoke-WebRequest @iwParams
-                foreach ($line in ($r.Content -split "`n")) {
-                    if ($line -match 'hq_str_\w{2}(\d{6})="([^"]*)"') {
-                        $code = $matches[1]
-                        $f = $matches[2] -split ','
-                        if ($f.Count -ge 10) {
-                            $price = [decimal]$f[3]
-                            if ($price -le 0) { $price = [decimal]$f[2] }
-                            if ($price -gt 0) {
-                                $chg = if ([decimal]$f[2] -ne 0) { [math]::Round(([decimal]$f[3] - [decimal]$f[2]) / [decimal]$f[2] * 100, 2) } else { 0 }
-                                $quotes[$code] = @{ price = $price; change = $chg; amount = [decimal]$f[9] }
+            for ($retry = 0; $retry -lt 3; $retry++) {
+                try {
+                    $iwParams = @{ Uri = $url; Headers = @{ "User-Agent" = "Mozilla/5.0"; "Referer" = "https://finance.sina.com.cn" }; TimeoutSec = 15; UseBasicParsing = $true }
+                    if ($proxyUrl) { $iwParams.Proxy = $proxyUrl; $iwParams.ProxyUseDefaultCredentials = $true }
+                    $r = Invoke-WebRequest @iwParams
+                    foreach ($line in ($r.Content -split "`n")) {
+                        if ($line -match 'hq_str_\w{2}(\d{6})="([^"]*)"') {
+                            $code = $matches[1]
+                            $f = $matches[2] -split ','
+                            if ($f.Count -ge 10) {
+                                $price = [decimal]$f[3]
+                                if ($price -le 0) { $price = [decimal]$f[2] }
+                                if ($price -gt 0) {
+                                    $chg = if ([decimal]$f[2] -ne 0) { [math]::Round(([decimal]$f[3] - [decimal]$f[2]) / [decimal]$f[2] * 100, 2) } else { 0 }
+                                    $quotes[$code] = @{ price = $price; change = $chg; amount = [decimal]$f[9] }
+                                }
                             }
                         }
                     }
+                    break
+                } catch {
+                    if ($retry -lt 2) { Start-Sleep -Milliseconds 500 }
                 }
-            } catch {}
+            }
         }
         return $quotes
     }
@@ -393,22 +419,28 @@ $ps.AddScript({
     }
     $result = $result | Sort-Object yield -Descending
 
-    # ===== 阈值穿越检测 =====
+    # ===== 数据完整性检查 =====
     $lock.WaitOne()
-    $prevYields = $cache.prevYields.Clone()
     $prevDataCount = $cache.data.Count
     $lock.ReleaseMutex()
 
-    $newAlerts = @()
-
-    # 数据量保护：如果本次数据比上次少20%以上，说明API请求不完整，跳过预警检测
-    $skipAlerts = $false
-    if ($prevDataCount -gt 0 -and $result.Count -lt $prevDataCount * 0.8) {
-        Write-Host "[预警] 跳过检测：本次数据($($result.Count))比上次($prevDataCount)少太多，可能API不完整" -ForegroundColor DarkGray
-        $skipAlerts = $true
+    if ($prevDataCount -gt 0 -and $result.Count -lt $prevDataCount * 0.95) {
+        # 数据不完整，保留上一轮数据，不更新显示和预警
+        Write-Host "[更新] 数据不完整($($result.Count)/$prevDataCount)，保留上一轮数据，跳过预警" -ForegroundColor Yellow
+        $lock.WaitOne()
+        $cache.updating = $false
+        $lock.ReleaseMutex()
+        return
     }
 
-    if (-not $skipAlerts) {
+    Write-Host "[更新] 数据完整: $($result.Count) 只股票 (上轮: $prevDataCount)" -ForegroundColor Green
+
+    # ===== 阈值穿越检测 =====
+    $lock.WaitOne()
+    $prevYields = $cache.prevYields.Clone()
+    $lock.ReleaseMutex()
+
+    $newAlerts = @()
     $now = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     foreach ($stock in $result) {
         $code = $stock.code
@@ -441,7 +473,6 @@ $ps.AddScript({
             }
         }
     }
-    } # end if (-not $skipAlerts)
 
     # 更新快照
     $newPrevYields = @{}
