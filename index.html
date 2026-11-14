@@ -266,7 +266,7 @@ function sendNotification(title, body) {
 
 async function fetchData() {
   try {
-    const res = await fetch('/api/data');
+    const res = await fetch('http://localhost:8080/api/data');
     const json = await res.json();
     if (json.success) {
       allData = json.data || [];
