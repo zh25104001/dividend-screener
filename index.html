@@ -481,7 +481,8 @@ function renderAlerts() {
 
   tbody.innerHTML = alerts.map(a => {
     const tagClass = a.type === 'up' ? 'alert-tag-up' : 'alert-tag-down';
-    const tagText = a.type === 'up' ? '📈 突破5%' : '📉 跌破4%';
+    const tagMatch = a.message.match(/(突破|跌破)([\d%、]+)关口/);
+    const tagText = (a.type === 'up' ? '📈 ' : '📉 ') + (tagMatch ? `${tagMatch[1]}${tagMatch[2]}` : (a.type === 'up' ? '📈 突破' : '📉 跌破'));
     const arrowClass = a.type === 'up' ? 'alert-up' : 'alert-down';
     const arrow = a.type === 'up' ? '↑' : '↓';
     const favClass = isFavorited(a.code) ? 'favorited' : '';
