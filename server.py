@@ -277,6 +277,7 @@ def update_data():
 
     new_alerts = []
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    THRESHOLDS = [3, 4, 5, 6, 7, 8, 9]
     for stock in result:
         code = stock["code"]
         old_yield = prev_yields.get(code)
@@ -285,28 +286,29 @@ def update_data():
             diff = abs(new_yield - old_yield)
             if diff < 0.3:
                 continue
-            if old_yield < 5 and new_yield >= 5:
-                new_alerts.append({
-                    "type": "up", "code": code, "name": stock["name"],
-                    "oldYield": round(old_yield, 2), "newYield": new_yield,
-                    "price": stock["price"], "time": now,
-                    "message": f"{stock['name']}({code}) 股息率从 {round(old_yield, 2)}% 升至 {new_yield}%，突破5%关口",
-                })
-            elif old_yield >= 4 and new_yield < 4:
-                new_alerts.append({
-                    "type": "down", "code": code, "name": stock["name"],
-                    "oldYield": round(old_yield, 2), "newYield": new_yield,
-                    "price": stock["price"], "time": now,
-                    "message": f"{stock['name']}({code}) 股息率从 {round(old_yield, 2)}% 降至 {new_yield}%，跌破4%关口",
-                })
+            for t in THRESHOLDS:
+                if old_yield < t <= new_yield:
+                    new_alerts.append({
+                        "type": "up", "code": code, "name": stock["name"],
+                        "oldYield": round(old_yield, 2), "newYield": new_yield,
+                        "price": stock["price"], "time": now,
+                        "message": f"{stock['name']}({code}) 股息率从 {round(old_yield, 2)}% 升至 {new_yield}%，突破{t}%关口",
+                    })
+                elif old_yield >= t > new_yield:
+                    new_alerts.append({
+                        "type": "down", "code": code, "name": stock["name"],
+                        "oldYield": round(old_yield, 2), "newYield": new_yield,
+                        "price": stock["price"], "time": now,
+                        "message": f"{stock['name']}({code}) 股息率从 {round(old_yield, 2)}% 降至 {new_yield}%，跌破{t}%关口",
+                    })
 
     # 更新快照
     new_prev_yields = {s["code"]: s["yield"] for s in result}
 
     with cache_lock:
         all_alerts = new_alerts + cache["alerts"]
-        if len(all_alerts) > 100:
-            all_alerts = all_alerts[:100]
+        if len(all_alerts) > 200:
+            all_alerts = all_alerts[:200]
         cache["alerts"] = all_alerts
         cache["prev_yields"] = new_prev_yields
         alert_snapshot = list(cache["alerts"])
