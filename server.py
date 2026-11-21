@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timedelta
 
 import requests
-from flask import Flask, jsonify, send_file
+from flask import Flask, jsonify, request, send_file
 
 # ===== 读取配置文件 =====
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -70,6 +70,7 @@ cache = {
     "updating": False,
     "prev_yields": {},
     "alerts": [],
+    "favorites": set(),  # 收藏的股票代码，预警只检测收藏股票
 }
 
 
@@ -84,7 +85,8 @@ def load_cache_from_file():
             with cache_lock:
                 cache["data"] = saved["data"]
                 cache["alerts"] = saved.get("alerts", [])
-                cache["prev_yields"] = {k: float(v) for k, v in saved.get("prev_yields", {}).items()}
+                cache["prev_yields"] = {k: float(v) for k, v in saved.get("prevYields", {}).items()}
+                cache["favorites"] = {str(f) for f in saved.get("favorites", [])}
                 cache["last_update"] = saved.get("lastUpdate")
                 cache["updating"] = True
                 # 预生成JSON
@@ -113,6 +115,7 @@ def save_cache_to_file():
                 "data": cache["data"],
                 "alerts": cache["alerts"],
                 "prevYields": cache["prev_yields"],
+                "favorites": sorted(cache["favorites"]),
             }
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump(to_save, f, ensure_ascii=False, separators=(",", ":"))
@@ -274,12 +277,16 @@ def update_data():
     # ===== 阈值穿越检测 =====
     with cache_lock:
         prev_yields = dict(cache["prev_yields"])
+        favorites = set(cache["favorites"])
 
+    # 预警只检测收藏的股票
     new_alerts = []
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     THRESHOLDS = [3, 4, 5, 6, 7, 8, 9]
     for stock in result:
         code = stock["code"]
+        if code not in favorites:
+            continue
         old_yield = prev_yields.get(code)
         new_yield = stock["yield"]
         if old_yield is not None:
@@ -397,6 +404,19 @@ def api_data():
             "success": True, "count": 0, "lastUpdate": None,
             "updating": True, "alertCount": 0, "data": [],
         })
+
+
+@app.route("/api/favorites", methods=["POST"])
+def api_favorites():
+    """前端同步收藏列表，预警只检测收藏的股票"""
+    try:
+        data = request.get_json(force=True)
+        favs = {str(f) for f in data.get("favorites", [])}
+        with cache_lock:
+            cache["favorites"] = favs
+        return jsonify({"success": True, "count": len(favs)})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
 
 
 @app.route("/")

@@ -160,6 +160,17 @@ tr:hover { background: #1e2230; }
 .pagination button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .pagination button:disabled { opacity: .35; cursor: default; }
 .pagination .page-info { color: var(--text-dim); font-size: 12px; margin: 0 8px; }
+/* 收藏页目标价详情行 */
+.detail-row td {
+  background: #16181f; border-bottom: 1px solid var(--border);
+  padding: 6px 12px; font-size: 12px; text-align: left;
+}
+.target-label { color: var(--text-dim); margin-right: 8px; }
+.target-item {
+  display: inline-block; margin-right: 12px; color: var(--text-dim);
+  white-space: nowrap;
+}
+.target-item.target-reached { color: var(--gold); font-weight: 600; }
 .empty-state {
   text-align: center; padding: 60px 20px; color: var(--text-dim);
 }
@@ -244,6 +255,16 @@ let notifyEnabled = false;
 function saveFavorites() {
   localStorage.setItem('dividend_favorites', JSON.stringify(favorites));
   updateFavBadge();
+  syncFavoritesToServer();
+}
+
+// 同步收藏列表到服务器，服务器只对收藏股票做预警
+function syncFavoritesToServer() {
+  fetch('http://localhost:8081/api/favorites', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ favorites: favorites })
+  }).catch(() => {});
 }
 
 function isFavorited(code) {
@@ -403,6 +424,18 @@ function renderTable(search) {
     const nameHtml = highlight(d.name, search);
     const codeHtml = highlight(d.code, search);
 
+    let detailRow = '';
+    if (currentTab === 'favorites') {
+      // 各档股息率对应的目标价格 = 每股分红 / 目标股息率
+      const TARGETS = [3, 4, 5, 5.5, 6, 6.5, 7];
+      const prices = TARGETS.map(t => {
+        const target = d.totalDividend / t * 100;
+        const reached = d.price <= target;  // 当前价低于目标价 → 该档股息率已达到
+        return `<span class="target-item ${reached ? 'target-reached' : ''}">${t}%: ${target.toFixed(2)}</span>`;
+      }).join('');
+      detailRow = `<tr class="detail-row"><td colspan="8"><span class="target-label">目标价:</span>${prices}</td></tr>`;
+    }
+
     return `<tr>
       <td><button class="star-btn ${favClass}" onclick="toggleFavorite('${d.code}')" title="收藏/取消">${favIcon}</button></td>
       <td><span class="stock-name">${nameHtml}</span><span class="stock-code">${codeHtml}</span></td>
@@ -412,7 +445,7 @@ function renderTable(search) {
       <td>${d.totalDividend.toFixed(3)} 元</td>
       <td>${d.divCount}</td>
       <td>${d.amount.toFixed(2)}</td>
-    </tr>`;
+    </tr>${detailRow}`;
   }).join('');
 
   // 渲染分页控件
@@ -473,7 +506,7 @@ function renderAlerts() {
       <div class="empty-state">
         <div class="icon">🔔</div>
         <div>暂无预警记录</div>
-        <div class="hint">系统会在每次数据更新时检测股息率穿越3%-9%各档阈值的股票并记录在此</div>
+        <div class="hint">系统会在每次数据更新时检测<span style="color:var(--gold)">收藏股票</span>的股息率是否穿越3%-9%各档阈值并记录在此</div>
       </div>
     </td></tr>`;
     return;
@@ -634,6 +667,7 @@ document.querySelectorAll('th').forEach(th => {
 // 初始化
 requestNotifyPermission();
 updateFavBadge();
+syncFavoritesToServer();
 fetchData();
 </script>
 </body>
